@@ -60,5 +60,20 @@ contract Acccount is BaseAccount, Initializable, TokenCallbackHandler, UUPSUpgra
             }
         }
     }
+    function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
+    internal override virtual returns (uint256 validationData) {
+        bytes32 hash = MessageHashUtils.toEthSignedMessageHash(userOpHash);
+        if (owner != ECDSA.recover(hash, userOp.signature))
+            return SIG_VALIDATION_FAILED;
+        return SIG_VALIDATION_SUCCESS;
+    }
+
+    function getDeposit() public view returns (uint256) {
+        return entryPoint().balanceOf(address(this));
+    }
+
+    function addDeposit() public payable {
+        entryPoint().depositTo{value: msg.value}(address(this));
+    }
 
 }
