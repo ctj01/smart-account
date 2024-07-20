@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.23;
 
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import "@account-abstraction/contracts/core/BaseAccount.sol";
-import "@account-abstraction/contracts//core/Helpers.sol";
-import "@account-abstraction/contracts/callback/TokenCallbackHandler.sol";
-
-contract Acccount is BaseAccount, Initializable, TokenCallbackHandler, UUPSUpgradeable {
+import "@account-abstraction/contracts/core/Helpers.sol";
+import "@account-abstraction/contracts/samples/callback/TokenCallbackHandler.sol";
+import "@account-abstraction/contracts/core/EntryPoint.sol";
+contract Account is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, Initializable {
     
     address public owner;
     IEntryPoint private immutable _entryPoint;
@@ -27,6 +27,11 @@ contract Acccount is BaseAccount, Initializable, TokenCallbackHandler, UUPSUpgra
 
     // solhint-disable-next-line no-empty-blocks
     receive() external payable {}
+
+     constructor(IEntryPoint aentryPoint) {
+        _entryPoint = aentryPoint;
+       _disableInitializers();
+    }
     
     function _onlyOwner() internal view {
         //directly from EOA owner, or through the account itself (which gets redirected through execute())
@@ -74,6 +79,19 @@ contract Acccount is BaseAccount, Initializable, TokenCallbackHandler, UUPSUpgra
 
     function addDeposit() public payable {
         entryPoint().depositTo{value: msg.value}(address(this));
+    }
+     function initialize(address anOwner) public virtual initializer {
+        _initialize(anOwner);
+    }
+
+    function _initialize(address anOwner) internal virtual {
+        owner = anOwner;
+        emit AccountInitialized(_entryPoint, owner);
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal view override {
+        (newImplementation);
+        _onlyOwner();
     }
 
 }

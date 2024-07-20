@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.23;
 
 
 
@@ -12,7 +12,7 @@ contract AccountFactory {
 
     event AccountCreated(address indexed account, address indexed owner);
 
-    Acccount public immutable accountImplementation;
+    Account public immutable accountImplementation;
 
     constructor(IEntryPoint _entryPoint) {
         accountImplementation = new Account(_entryPoint);
