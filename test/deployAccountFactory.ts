@@ -10,7 +10,8 @@ const deployAccountFactory  = async function (hre: HardhatRuntimeEnvironment, en
         // deterministicDeployment: process.env.SALT ??
     })
     const ret = await tx.waitForDeployment();
-    return ret.target;
+    const contract = await ethers.getContractAt('AccountFactory', ret.target.toString())
+    return contract;
 }
 
 export default deployAccountFactory

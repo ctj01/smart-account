@@ -9,6 +9,8 @@ import "@account-abstraction/contracts/core/BaseAccount.sol";
 import "@account-abstraction/contracts/core/Helpers.sol";
 import "@account-abstraction/contracts/samples/callback/TokenCallbackHandler.sol";
 import "@account-abstraction/contracts/core/EntryPoint.sol";
+import "@account-abstraction/contracts/core/EntryPointSimulations.sol";
+
 contract Account is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, Initializable {
     
     address public owner;
