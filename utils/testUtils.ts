@@ -1,11 +1,14 @@
 
-import { Signer, solidityPackedKeccak256, Wallet, Interface, keccak256 } from 'ethers'
+import { Signer, solidityPackedKeccak256, Wallet, Interface, keccak256, Contract, toBeArray, solidityPackedSha256 } from 'ethers'
 import { Account, EntryPoint, AccountFactory, Account__factory, AccountFactory__factory, EntryPointSimulations__factory, IEntryPointSimulations, EntryPoint__factory } from "../typechain-types";
-import { bufferToHexa, defaultAbiCoder, DefaultsForUserOp, encodeUserOp, packAccountGasLimits, PackedUserOperation, packPaymasterData, packUserOp, UserOperation } from './UserOp';
+import { dateToHex, defaultAbiCoder, DefaultsForUserOp, encodeUserOp, packAccountGasLimits, PackedUserOperation, packPaymasterData, packUserOp, UserOperation } from './UserOp';
 import EntryPointSimulationsJson from '@account-abstraction/contracts/artifacts/EntryPointSimulations.json'
+import { ResultFillAndSign, ResultFillPackSign } from '../interfaces/result/Result';
 
 import { ethers } from 'hardhat';
 import { arrayify, hexDataSlice, hexlify } from '@ethersproject/bytes';
+import { json } from 'hardhat/internal/core/params/argumentTypes';
+import { PackedUserOperationStruct } from '../typechain-types/contracts/Account';
 
 export async function createAccount(
     ethersSigner: Signer,
@@ -21,7 +24,8 @@ export async function createAccount(
     if (!_factory) {
         _factory = AccountFactory__factory.connect(entryPoint, ethersSigner)
     }
-    const salt = solidityPackedKeccak256(['address'], [accountOwner])
+    const salt = computeSalt(accountOwner);
+
     const implementation = await _factory?.accountImplementation()
     await _factory?.createAccount(accountOwner, salt)
     const address = await _factory?.getAddress(accountOwner, salt)
@@ -31,12 +35,18 @@ export async function createAccount(
     return { proxy, accountFactory: _factory, implementation: implementation }
 }
 
+
+export const computeSalt = (accountOwner: string) => solidityPackedKeccak256(['address'], [accountOwner])
+
 export function getUserOpHash(op: UserOperation, entryPoint: string, chainId: bigint): string {
 
-    const userOpHash = keccak256(encodeUserOp(op, true))
-    const enc = defaultAbiCoder.encode(
-        ['bytes32', 'address', 'uint256'],
-        [userOpHash, entryPoint, chainId])
+
+    const userOpHash = encodeUserOp(op, true)
+    let enc = solidityPackedKeccak256(
+        ['bytes', 'address', 'uint256'],
+        [keccak256(userOpHash), entryPoint, chainId]
+    )
+
 
     return keccak256(enc)
 }
@@ -45,70 +55,54 @@ export function getUserOpHash(op: UserOperation, entryPoint: string, chainId: bi
 
 
 
-export async function fillUserOp(op: Partial<UserOperation>, entryPoint?: EntryPoint, provider?: Signer): Promise<UserOperation> {
-
-    const op1 = {
-        ...op,
-    }
-    const entryPointAddress = await entryPoint?.getAddress();
-    if (op1.initCode != null) {
-        const initAddress = hexDataSlice(op1.initCode!, 0, 20)
-
-        const initCodeData = hexDataSlice(op1.initCode!, 20)
-        if (op1.nonce == null) {
-            op1.nonce = 0
-        }
-        if (op1.sender == null) {
-            op1.sender = await provider?.getAddress()
-        }
+export async function fillUserOp(op: Partial<UserOperation>, entryPoint?: EntryPoint, getNonceFunction = 'getNonce'): Promise<UserOperation> {
+    const op1 = { ...op }
+    const provider = ethers.provider
+    const eAddress = await entryPoint?.getAddress()
+    if (op.initCode != null) {
+        const initAddr = hexDataSlice(op1.initCode!, 0, 20)
+        const initCallData = hexDataSlice(op1.initCode!, 20)
+        if (op1.nonce == null) op1.nonce = 0
 
         if (op1.verificationGasLimit == null) {
-            const initGasStimation = await provider?.estimateGas({
-                from: entryPointAddress,
-                data: initCodeData,
-                to: initAddress,
+            if (provider == null) throw new Error('no entrypoint/provider')
+            const initEstimate = await provider.estimateGas({
+                from: eAddress,
+                to: initAddr,
+                data: initCallData,
                 gasLimit: 10e6
-            });
-            const initGasStimationToHex = hexlify(initGasStimation as bigint);
-            const hexGasLimit = bufferToHexa(initGasStimationToHex);
-            op1.verificationGasLimit = hexGasLimit;
+            })
+            op1.verificationGasLimit = BigInt(DefaultsForUserOp.verificationGasLimit) + BigInt(initEstimate)
         }
-        if (op1.callGasLimit == null) {
-            const initGasStimation = await provider?.estimateGas({
-                from: entryPointAddress,
-                data: initCodeData,
-                to: initAddress,
-                gasLimit: 10e6
-            });
-            const initGasStimationToHex = hexlify(initGasStimation as bigint);
-            const hexGasLimit = bufferToHexa(initGasStimationToHex);
-            op1.callGasLimit = hexGasLimit;
-        }
-
-        if (op1.paymaster != null) {
-            if (op1.paymasterVerificationGasLimit == null) {
-                op1.paymasterVerificationGasLimit = DefaultsForUserOp.paymasterVerificationGasLimit
-            }
-            if (op1.paymasterPostOpGasLimit == null) {
-                op1.paymasterPostOpGasLimit = DefaultsForUserOp.paymasterPostOpGasLimit
-            }
-            if (op1.paymasterData == null) {
-                op1.paymasterData = DefaultsForUserOp.paymasterData
-            }
-        }
-
-        if (op1.maxFeePerGas == null) {
-            op1.maxFeePerGas = DefaultsForUserOp.maxFeePerGas
-        }
-        if (op1.maxPriorityFeePerGas == null) {
-            op1.maxPriorityFeePerGas = DefaultsForUserOp.maxPriorityFeePerGas
-        }
-
     }
-    const userOp = fillUserOpDefaults(op1)
+    if (op1.nonce == null) {
+        if (provider == null) throw new Error('must have entryPoint to autofill nonce')
+        const c = new Contract(op.sender!, [`function ${getNonceFunction}() view returns(uint256)`], provider)
+        op1.nonce = await c[getNonceFunction]().catch(() => 0)
+    }
 
-    return userOp;
+    if (op1.paymaster != null) {
+        if (op1.paymasterVerificationGasLimit == null) {
+            op1.paymasterVerificationGasLimit = DefaultsForUserOp.paymasterVerificationGasLimit
+        }
+        if (op1.paymasterPostOpGasLimit == null) {
+            op1.paymasterPostOpGasLimit = DefaultsForUserOp.paymasterPostOpGasLimit
+        }
+    }
+    if (op1.maxFeePerGas == null) {
+        if (provider == null) throw new Error('must have entryPoint to autofill maxFeePerGas')
+        const block = await provider.getBlock('latest')
+        op1.maxFeePerGas = block?.baseFeePerGas ?? DefaultsForUserOp.maxPriorityFeePerGas ?? DefaultsForUserOp.maxPriorityFeePerGas;
+    }
+    // TODO: this is exactly what fillUserOp below should do - but it doesn't.
+    // adding this manually
+    if (op1.maxPriorityFeePerGas == null) {
+        op1.maxPriorityFeePerGas = DefaultsForUserOp.maxPriorityFeePerGas
+    }
+    const op2 = fillUserOpDefaults(op1);
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
 
+    return op2
 }
 
 export function fillUserOpDefaults(op: Partial<UserOperation>, defaults = DefaultsForUserOp): UserOperation {
@@ -125,41 +119,58 @@ export function fillUserOpDefaults(op: Partial<UserOperation>, defaults = Defaul
     return filled
 }
 
-export async function fillAndSign(op: Partial<UserOperation>, signer: Signer | Wallet, entryPoint?: EntryPoint, getNonceFunction = 'getNonce'): Promise<UserOperation> {
+
+export async function fillAndSign(op: Partial<UserOperation>, signer: Signer | Wallet, entryPoint?: EntryPoint, validUntil?: string, validAfter?: string, getNonceFunction = 'getNonce'): Promise<ResultFillAndSign> {
     {
+        if (validUntil == null) {
+            validUntil = dateToHex(new Date(Date.now() + 1000 * 60 * 60 * 24 * 365))
+        }
+        if (validAfter == null) {
+            validAfter = dateToHex(new Date(Date.now() - 1000 * 60 * 60 * 24 * 365))
+        }
         const provider = signer.provider;
         const entryPointAddress = await entryPoint?.getAddress() as string;
-        const userOp = await fillUserOp(op, entryPoint, signer) as UserOperation;
-
-
+        const userOp = await fillUserOp(op, entryPoint, getNonceFunction) as UserOperation;
         const chainId = await provider?.getNetwork();
-        
-
-        const message = arrayify(getUserOpHash(userOp, entryPointAddress, chainId?.chainId as bigint));
-    
+        const PaymentMasterContract = await ethers.getContractAt('PaymentMaster', op.paymaster as string);
+        const packedUserOp = packUserOp(userOp);
         let signature;
+        let userOpHash;
         try {
-            signature = await signer.signMessage(message);
-
-        } catch (error: any) {
+            userOpHash = await PaymentMasterContract.getHash(packedUserOp, validUntil, validAfter);
+            const message = defaultAbiCoder.encode(['bytes32', 'address', 'uint256'], [userOpHash, entryPointAddress, chainId?.chainId]);
+            const messageHash = keccak256(message);
+            signature = await signer.signMessage(arrayify(messageHash));
+        } catch (error) {
             throw new Error('Failed to sign message: ' + error);
-
         }
-        
+
+
+
         const userOpWithSignature = { ...userOp, signature }
-        return userOpWithSignature
+        return {
+            userOp: userOpWithSignature,
+            signature,
+            userOpHash
+        }
 
     }
 }
 
 
-export async function fillSignAndPack(op: Partial<UserOperation>, signer: Signer | Wallet , entryPoint?: EntryPoint, getNonceFunction = 'getNonce'): Promise<PackedUserOperation> {
-    const filledAndSignedOp = await fillAndSign(op, signer, entryPoint, getNonceFunction)
-    return packUserOp(filledAndSignedOp)
+export async function fillSignAndPack(op: Partial<UserOperation>, signer: Signer | Wallet, entryPoint?: EntryPoint, validUntil?: string, validAfter?: string, getNonceFunction = 'getNonce'): Promise<ResultFillPackSign> {
+    const filledAndSignedOp = await fillAndSign(op, signer, entryPoint, validUntil, validAfter, getNonceFunction)
+    const userOperation = packUserOp(filledAndSignedOp.userOp)
+
+    return {
+        userOp: userOperation,
+        signature: filledAndSignedOp.signature,
+        userOpHash: filledAndSignedOp.userOpHash
+    }
 }
 
 export async function simulateValidation(
-    userOp: PackedUserOperation,
+    userOp: PackedUserOperationStruct,
     entryPointAddress: string,
     txOverrides?: any): Promise<IEntryPointSimulations.ValidationResultStructOutput> {
     const entryPointSimulations = EntryPointSimulations__factory.createInterface()
@@ -174,6 +185,7 @@ export async function simulateValidation(
             code: EntryPointSimulationsJson.deployedBytecode
         }
     }
+    console.log(txOverrides)
     try {
         const simulationResult = await ethers.provider.send('eth_call', [tx, 'latest', stateOverride])
         const res = entryPointSimulations.decodeFunctionResult('simulateValidation', simulationResult)
